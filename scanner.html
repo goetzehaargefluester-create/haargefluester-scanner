@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>HAARGEFLÜSTER Barcode Scanner</title>
+  <script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: Arial, sans-serif;
+      background: #20272d;
+      color: #fff;
+      padding: max(18px, env(safe-area-inset-top)) 14px max(24px, env(safe-area-inset-bottom));
+    }
+    .wrap { max-width: 620px; margin: 0 auto; }
+    .kopf {
+      background: #f6eadc;
+      color: #222;
+      border-radius: 14px 14px 0 0;
+      padding: 22px 18px 18px;
+      text-align: center;
+      border-bottom: 4px solid #a9785d;
+    }
+    .kopf h1 { margin: 0; font-size: 24px; letter-spacing: .5px; }
+    .kopf p { margin: 7px 0 0; color: #66594f; font-size: 14px; }
+    .box {
+      background: #f6eadc;
+      color: #222;
+      border-radius: 0 0 14px 14px;
+      padding: 14px;
+    }
+    #reader {
+      width: 100%;
+      overflow: hidden;
+      border-radius: 10px;
+      background: #111;
+    }
+    #status {
+      margin-top: 12px;
+      padding: 12px;
+      border-radius: 9px;
+      background: #eee3d7;
+      color: #5e5147;
+      text-align: center;
+      font-size: 14px;
+      line-height: 1.4;
+    }
+    #status.erfolg { background: #dfe9df; color: #334b37; }
+    #status.fehler { background: #f1dddd; color: #6c3333; }
+    .code {
+      display: none;
+      margin-top: 12px;
+      padding: 14px;
+      border-radius: 9px;
+      background: #fffaf4;
+      text-align: center;
+      font-size: 22px;
+      font-weight: bold;
+      letter-spacing: 1px;
+      word-break: break-all;
+    }
+    .code.aktiv { display: block; }
+    .hinweis {
+      margin-top: 12px;
+      font-size: 12px;
+      line-height: 1.45;
+      color: #77695e;
+      text-align: center;
+    }
+    button {
+      width: 100%;
+      margin-top: 12px;
+      border: 0;
+      border-radius: 9px;
+      padding: 14px 12px;
+      font-weight: bold;
+      font-size: 15px;
+      cursor: pointer;
+    }
+    .neu { background: #a9785d; color: #fff; display: none; }
+    .neu.aktiv { display: block; }
+    .zurueck { background: #ded2c5; color: #222; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="kopf">
+      <h1>HAARGEFLÜSTER</h1>
+      <p>Barcode Scanner</p>
+    </div>
+    <div class="box">
+      <div id="reader"></div>
+      <div id="status">Kamera wird gestartet …</div>
+      <div id="code" class="code"></div>
+      <button id="neuBtn" class="neu" type="button" onclick="scannerNeuStarten()">WEITEREN BARCODE SCANNEN</button>
+      <button class="zurueck" type="button" onclick="zurSalonApp()">← ZUR SALON-APP</button>
+      <div class="hinweis">Die Scanner-Seite liest nur den Barcode. Produkt- und Bestelldaten bleiben in der Salon-App.</div>
+    </div>
+  </div>
+
+<script>
+let scanner = null;
+let scannerAktiv = false;
+let letzterCode = '';
+
+function statusSetzen(text, typ) {
+  const el = document.getElementById('status');
+  el.textContent = text;
+  el.className = typ || '';
+}
+
+function codeAnzeigen(code) {
+  const el = document.getElementById('code');
+  el.textContent = code;
+  el.classList.add('aktiv');
+  document.getElementById('neuBtn').classList.add('aktiv');
+}
+
+function codeUebertragen(code) {
+  try {
+    if (window.opener && !window.opener.closed) {
+      window.opener.postMessage({
+        type: 'HAARGEFLUESTER_BARCODE',
+        code: String(code)
+      }, '*');
+      return true;
+    }
+  } catch (e) {}
+  return false;
+}
+
+async function scannerStoppen() {
+  scannerAktiv = false;
+  if (!scanner) return;
+  try {
+    if (scanner.isScanning) await scanner.stop();
+  } catch (e) {}
+  try { scanner.clear(); } catch (e) {}
+  scanner = null;
+}
+
+async function scannerStarten() {
+  letzterCode = '';
+  document.getElementById('code').classList.remove('aktiv');
+  document.getElementById('neuBtn').classList.remove('aktiv');
+  statusSetzen('Kamera wird gestartet …');
+
+  if (typeof Html5Qrcode === 'undefined') {
+    statusSetzen('Scanner-Bibliothek konnte nicht geladen werden. Bitte Internetverbindung prüfen.', 'fehler');
+    return;
+  }
+
+  try {
+    const formate = [
+      Html5QrcodeSupportedFormats.EAN_13,
+      Html5QrcodeSupportedFormats.EAN_8,
+      Html5QrcodeSupportedFormats.UPC_A,
+      Html5QrcodeSupportedFormats.UPC_E,
+      Html5QrcodeSupportedFormats.CODE_128
+    ];
+
+    scanner = new Html5Qrcode('reader', {
+      formatsToSupport: formate,
+      useBarCodeDetectorIfSupported: false,
+      verbose: false
+    });
+
+    await scanner.start(
+      { facingMode: { exact: 'environment' } },
+      {
+        fps: 10,
+        qrbox: function(w, h) {
+          return {
+            width: Math.floor(w * 0.88),
+            height: Math.min(150, Math.floor(h * 0.42))
+          };
+        },
+        aspectRatio: 1.7778
+      },
+      async function(decodedText) {
+        const code = String(decodedText || '').replace(/\D/g, '');
+        if (!code || code === letzterCode) return;
+        letzterCode = code;
+        await scannerStoppen();
+
+        const uebertragen = codeUebertragen(code);
+        codeAnzeigen(code);
+
+        if (uebertragen) {
+          statusSetzen('Barcode erkannt und an die Salon-App übertragen.', 'erfolg');
+          setTimeout(function() {
+            try { window.close(); } catch (e) {}
+          }, 700);
+        } else {
+          statusSetzen('Barcode erkannt. Die Salon-App konnte nicht automatisch erreicht werden. Bitte den Code dort manuell eingeben.', 'fehler');
+        }
+      },
+      function() {}
+    );
+
+    scannerAktiv = true;
+    statusSetzen('Scanner aktiv – Barcode quer und vollständig in den Rahmen halten.');
+  } catch (e) {
+    // Manche iPhones akzeptieren exact:environment nicht. Zweiter Versuch mit einfachem facingMode.
+    try {
+      if (scanner) {
+        try { scanner.clear(); } catch (x) {}
+      }
+      scanner = new Html5Qrcode('reader', { verbose: false });
+      await scanner.start(
+        { facingMode: 'environment' },
+        { fps: 10, qrbox: { width: 280, height: 120 } },
+        async function(decodedText) {
+          const code = String(decodedText || '').replace(/\D/g, '');
+          if (!code || code === letzterCode) return;
+          letzterCode = code;
+          await scannerStoppen();
+          const uebertragen = codeUebertragen(code);
+          codeAnzeigen(code);
+          if (uebertragen) {
+            statusSetzen('Barcode erkannt und an die Salon-App übertragen.', 'erfolg');
+            setTimeout(function() { try { window.close(); } catch (e) {} }, 700);
+          } else {
+            statusSetzen('Barcode erkannt. Die Salon-App konnte nicht automatisch erreicht werden. Bitte den Code dort manuell eingeben.', 'fehler');
+          }
+        },
+        function() {}
+      );
+      scannerAktiv = true;
+      statusSetzen('Scanner aktiv – Barcode quer und vollständig in den Rahmen halten.');
+    } catch (e2) {
+      statusSetzen('Kamera konnte nicht gestartet werden. Bitte Kamerazugriff für diese Scanner-Seite erlauben.', 'fehler');
+    }
+  }
+}
+
+async function scannerNeuStarten() {
+  await scannerStoppen();
+  scannerStarten();
+}
+
+async function zurSalonApp() {
+  await scannerStoppen();
+  try { window.close(); } catch (e) {}
+  if (window.opener && !window.opener.closed) {
+    try { window.opener.focus(); } catch (e) {}
+  }
+}
+
+window.addEventListener('load', scannerStarten);
+window.addEventListener('beforeunload', function() { scannerStoppen(); });
+</script>
+</body>
+</html>
