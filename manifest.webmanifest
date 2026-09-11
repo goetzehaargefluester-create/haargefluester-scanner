@@ -1,19 +1,24 @@
 {
+  "id": "./",
   "name": "HAARGEFLÜSTER Salon App",
   "short_name": "Salon App",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#20272d",
+  "theme_color": "#20272d",
   "icons": [
     {
-      "src": "icon-192.png",
+      "src": "./icon-192.png",
       "sizes": "192x192",
-      "type": "image/png"
+      "type": "image/png",
+      "purpose": "any"
     },
     {
-      "src": "icon-512.png",
+      "src": "./icon-512.png",
       "sizes": "512x512",
-      "type": "image/png"
+      "type": "image/png",
+      "purpose": "any"
     }
-  ],
-  "theme_color": "#20272d",
-  "background_color": "#20272d",
-  "display": "standalone"
+  ]
 }
