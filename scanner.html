@@ -4,7 +4,10 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>HAARGEFLÜSTER Barcode Scanner</title>
-  <script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+
+  <!-- ZXing Browser: robuste 1D-Barcode-Erkennung für EAN/UPC/Code128 -->
+  <script src="https://cdn.jsdelivr.net/npm/@zxing/browser@0.1.5/umd/zxing-browser.min.js"></script>
+
   <style>
     * { box-sizing: border-box; }
     body {
@@ -26,18 +29,54 @@
     }
     .kopf h1 { margin: 0; font-size: 24px; letter-spacing: .5px; }
     .kopf p { margin: 7px 0 0; color: #66594f; font-size: 14px; }
+
     .box {
       background: #f6eadc;
       color: #222;
       border-radius: 0 0 14px 14px;
       padding: 14px;
     }
-    #reader {
+
+    .video-wrap {
+      position: relative;
       width: 100%;
       overflow: hidden;
       border-radius: 10px;
       background: #111;
+      min-height: 260px;
     }
+
+    #video {
+      display: block;
+      width: 100%;
+      min-height: 260px;
+      max-height: 62vh;
+      object-fit: cover;
+      background: #111;
+    }
+
+    .scan-rahmen {
+      position: absolute;
+      left: 6%;
+      right: 6%;
+      top: 32%;
+      height: 36%;
+      border: 3px solid rgba(255,255,255,.92);
+      border-radius: 10px;
+      pointer-events: none;
+      box-shadow: 0 0 0 9999px rgba(0,0,0,.15);
+    }
+
+    .scan-linie {
+      position: absolute;
+      left: 10%;
+      right: 10%;
+      top: 50%;
+      height: 2px;
+      background: rgba(255,255,255,.9);
+      pointer-events: none;
+    }
+
     #status {
       margin-top: 12px;
       padding: 12px;
@@ -50,6 +89,7 @@
     }
     #status.erfolg { background: #dfe9df; color: #334b37; }
     #status.fehler { background: #f1dddd; color: #6c3333; }
+
     .code {
       display: none;
       margin-top: 12px;
@@ -63,6 +103,7 @@
       word-break: break-all;
     }
     .code.aktiv { display: block; }
+
     .hinweis {
       margin-top: 12px;
       font-size: 12px;
@@ -70,6 +111,7 @@
       color: #77695e;
       text-align: center;
     }
+
     button {
       width: 100%;
       margin-top: 12px;
@@ -85,26 +127,44 @@
     .zurueck { background: #ded2c5; color: #222; }
   </style>
 </head>
+
 <body>
   <div class="wrap">
     <div class="kopf">
       <h1>HAARGEFLÜSTER</h1>
       <p>Barcode Scanner</p>
     </div>
+
     <div class="box">
-      <div id="reader"></div>
+      <div class="video-wrap">
+        <video id="video" playsinline muted></video>
+        <div class="scan-rahmen"></div>
+        <div class="scan-linie"></div>
+      </div>
+
       <div id="status">Kamera wird gestartet …</div>
       <div id="code" class="code"></div>
-      <button id="neuBtn" class="neu" type="button" onclick="scannerNeuStarten()">WEITEREN BARCODE SCANNEN</button>
-      <button class="zurueck" type="button" onclick="zurSalonApp()">← ZUR SALON-APP</button>
-      <div class="hinweis">Die Scanner-Seite liest nur den Barcode. Produkt- und Bestelldaten bleiben in der Salon-App.</div>
+
+      <button id="neuBtn" class="neu" type="button" onclick="scannerNeuStarten()">
+        WEITEREN BARCODE SCANNEN
+      </button>
+
+      <button class="zurueck" type="button" onclick="zurSalonApp()">
+        ← ZUR SALON-APP
+      </button>
+
+      <div class="hinweis">
+        Barcode waagerecht halten, möglichst nah herangehen und kurz ruhig halten.
+        Produkt- und Bestelldaten bleiben in der Salon-App.
+      </div>
     </div>
   </div>
 
 <script>
-let scanner = null;
-let scannerAktiv = false;
+let controls = null;
+let reader = null;
 let letzterCode = '';
+let erkannt = false;
 
 function statusSetzen(text, typ) {
   const el = document.getElementById('status');
@@ -132,59 +192,63 @@ function codeUebertragen(code) {
   return false;
 }
 
-async function scannerStoppen() {
-  scannerAktiv = false;
-  if (!scanner) return;
+function scannerStoppen() {
   try {
-    if (scanner.isScanning) await scanner.stop();
+    if (controls) controls.stop();
   } catch (e) {}
-  try { scanner.clear(); } catch (e) {}
-  scanner = null;
+  controls = null;
+
+  const video = document.getElementById('video');
+  try {
+    const stream = video.srcObject;
+    if (stream && stream.getTracks) {
+      stream.getTracks().forEach(t => t.stop());
+    }
+  } catch (e) {}
+  try { video.srcObject = null; } catch (e) {}
 }
 
 async function scannerStarten() {
   letzterCode = '';
+  erkannt = false;
   document.getElementById('code').classList.remove('aktiv');
   document.getElementById('neuBtn').classList.remove('aktiv');
   statusSetzen('Kamera wird gestartet …');
 
-  if (typeof Html5Qrcode === 'undefined') {
+  if (!window.ZXingBrowser || !ZXingBrowser.BrowserMultiFormatReader) {
     statusSetzen('Scanner-Bibliothek konnte nicht geladen werden. Bitte Internetverbindung prüfen.', 'fehler');
     return;
   }
 
   try {
-    const formate = [
-      Html5QrcodeSupportedFormats.EAN_13,
-      Html5QrcodeSupportedFormats.EAN_8,
-      Html5QrcodeSupportedFormats.UPC_A,
-      Html5QrcodeSupportedFormats.UPC_E,
-      Html5QrcodeSupportedFormats.CODE_128
-    ];
+    reader = new ZXingBrowser.BrowserMultiFormatReader();
 
-    scanner = new Html5Qrcode('reader', {
-      formatsToSupport: formate,
-      useBarCodeDetectorIfSupported: false,
-      verbose: false
-    });
+    const devices = await ZXingBrowser.BrowserCodeReader.listVideoInputDevices();
+    if (!devices || !devices.length) {
+      throw new Error('Keine Kamera gefunden.');
+    }
 
-    await scanner.start(
-      { facingMode: { exact: 'environment' } },
-      {
-        fps: 10,
-        qrbox: function(w, h) {
-          return {
-            width: Math.floor(w * 0.88),
-            height: Math.min(150, Math.floor(h * 0.42))
-          };
-        },
-        aspectRatio: 1.7778
-      },
-      async function(decodedText) {
-        const code = String(decodedText || '').replace(/\D/g, '');
+    // Wenn möglich die rückseitige Kamera wählen.
+    let deviceId = devices[0].deviceId;
+    const rear = devices.find(d => /back|rear|environment|rück|hinten/i.test(d.label || ''));
+    if (rear) deviceId = rear.deviceId;
+
+    controls = await reader.decodeFromVideoDevice(
+      deviceId,
+      'video',
+      function(result, error, ctrl) {
+        if (!result || erkannt) return;
+
+        let code = String(result.getText ? result.getText() : result.text || '').trim();
+
+        // EAN/UPC sind numerisch; Code128 darf ggf. auch Zeichen enthalten.
         if (!code || code === letzterCode) return;
+
         letzterCode = code;
-        await scannerStoppen();
+        erkannt = true;
+
+        try { ctrl.stop(); } catch (e) {}
+        controls = null;
 
         const uebertragen = codeUebertragen(code);
         codeAnzeigen(code);
@@ -195,55 +259,49 @@ async function scannerStarten() {
             try { window.close(); } catch (e) {}
           }, 700);
         } else {
-          statusSetzen('Barcode erkannt. Die Salon-App konnte nicht automatisch erreicht werden. Bitte den Code dort manuell eingeben.', 'fehler');
+          statusSetzen(
+            'Barcode erkannt. Die Salon-App konnte nicht automatisch erreicht werden. Bitte zurück zur Salon-App wechseln.',
+            'fehler'
+          );
         }
-      },
-      function() {}
+      }
     );
 
-    scannerAktiv = true;
-    statusSetzen('Scanner aktiv – Barcode quer und vollständig in den Rahmen halten.');
-  } catch (e) {
-    // Manche iPhones akzeptieren exact:environment nicht. Zweiter Versuch mit einfachem facingMode.
+    // Nach Start höhere Kamera-Auflösung / Autofokus anfragen, sofern unterstützt.
     try {
-      if (scanner) {
-        try { scanner.clear(); } catch (x) {}
+      const video = document.getElementById('video');
+      const stream = video.srcObject;
+      const track = stream && stream.getVideoTracks ? stream.getVideoTracks()[0] : null;
+      if (track && track.applyConstraints) {
+        await track.applyConstraints({
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+          advanced: [
+            { focusMode: 'continuous' }
+          ]
+        });
       }
-      scanner = new Html5Qrcode('reader', { verbose: false });
-      await scanner.start(
-        { facingMode: 'environment' },
-        { fps: 10, qrbox: { width: 280, height: 120 } },
-        async function(decodedText) {
-          const code = String(decodedText || '').replace(/\D/g, '');
-          if (!code || code === letzterCode) return;
-          letzterCode = code;
-          await scannerStoppen();
-          const uebertragen = codeUebertragen(code);
-          codeAnzeigen(code);
-          if (uebertragen) {
-            statusSetzen('Barcode erkannt und an die Salon-App übertragen.', 'erfolg');
-            setTimeout(function() { try { window.close(); } catch (e) {} }, 700);
-          } else {
-            statusSetzen('Barcode erkannt. Die Salon-App konnte nicht automatisch erreicht werden. Bitte den Code dort manuell eingeben.', 'fehler');
-          }
-        },
-        function() {}
-      );
-      scannerAktiv = true;
-      statusSetzen('Scanner aktiv – Barcode quer und vollständig in den Rahmen halten.');
-    } catch (e2) {
-      statusSetzen('Kamera konnte nicht gestartet werden. Bitte Kamerazugriff für diese Scanner-Seite erlauben.', 'fehler');
+    } catch (e) {
+      // Nicht jedes iPhone unterstützt diese Zusatz-Constraints.
     }
+
+    statusSetzen('Scanner aktiv – Barcode waagerecht und vollständig in den Rahmen halten.');
+  } catch (e) {
+    console.error(e);
+    statusSetzen(
+      'Kamera konnte gestartet werden, aber der Scanner ist nicht aktiv. Seite bitte neu laden und erneut versuchen.',
+      'fehler'
+    );
   }
 }
 
-async function scannerNeuStarten() {
-  await scannerStoppen();
-  scannerStarten();
+function scannerNeuStarten() {
+  scannerStoppen();
+  setTimeout(scannerStarten, 250);
 }
 
-async function zurSalonApp() {
-  await scannerStoppen();
+function zurSalonApp() {
+  scannerStoppen();
   try { window.close(); } catch (e) {}
   if (window.opener && !window.opener.closed) {
     try { window.opener.focus(); } catch (e) {}
@@ -251,7 +309,7 @@ async function zurSalonApp() {
 }
 
 window.addEventListener('load', scannerStarten);
-window.addEventListener('beforeunload', function() { scannerStoppen(); });
+window.addEventListener('beforeunload', scannerStoppen);
 </script>
 </body>
 </html>
