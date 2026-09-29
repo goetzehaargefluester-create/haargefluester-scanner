@@ -57,10 +57,10 @@
 
     .scan-rahmen {
       position: absolute;
-      left: 6%;
-      right: 6%;
-      top: 32%;
-      height: 36%;
+      left: 12%;
+      right: 12%;
+      top: 38%;
+      height: 24%;
       border: 3px solid rgba(255,255,255,.92);
       border-radius: 10px;
       pointer-events: none;
@@ -143,6 +143,32 @@
       gap: 4px 9px;
     }
 
+
+    .kamera-tools {
+      margin-top: 12px;
+      padding: 12px;
+      border-radius: 9px;
+      background: #eee3d7;
+      color: #443b35;
+    }
+    .kamera-tools .titel {
+      font-weight: bold;
+      margin-bottom: 8px;
+    }
+    .zoom-zeile {
+      display: grid;
+      grid-template-columns: 48px 1fr 58px;
+      gap: 9px;
+      align-items: center;
+    }
+    #zoomSlider { width: 100%; }
+    #zoomWert { text-align: right; font-weight: bold; }
+    #fokusBtn {
+      margin-top: 10px;
+      background: #ded2c5;
+      color: #222;
+    }
+
   </style>
 </head>
 
@@ -162,13 +188,26 @@
 
       <div id="status">Kamera wird gestartet …</div>
 
+
+      <div id="kameraTools" class="kamera-tools">
+        <div class="titel">KAMERA-TEST</div>
+        <div class="zoom-zeile">
+          <span>Zoom</span>
+          <input id="zoomSlider" type="range" min="1" max="1" step="0.1" value="1" disabled>
+          <span id="zoomWert">–</span>
+        </div>
+        <button id="fokusBtn" type="button" onclick="fokusNeuAnfordern()">FOKUS NEU ANFORDERN</button>
+      </div>
+
       <div id="diagnose" class="diagnose">
-        <strong>SCANNER V3 · EAN TEST</strong>
+        <strong>SCANNER V4 · FOKUS / ZOOM TEST</strong>
         <div class="diagnose-grid">
           <span>ZXing:</span><span id="dZxing">prüfe …</span>
           <span>Formate:</span><span>EAN-13 · EAN-8 · UPC-A · CODE-128</span>
           <span>Kameras:</span><span id="dKameras">–</span>
           <span>Gewählt:</span><span id="dKamera">–</span>
+          <span>Zoom möglich:</span><span id="dZoom">prüfe …</span>
+          <span>Fokus:</span><span id="dFokus">prüfe …</span>
           <span>Video:</span><span id="dVideo">–</span>
           <span>readyState:</span><span id="dReady">–</span>
           <span>Decoder:</span><span id="dDecoder">–</span>
@@ -240,6 +279,7 @@ function scannerStoppen() {
     if (controls) controls.stop();
   } catch (e) {}
   controls = null;
+  aktiveVideoSpur = null;
 
   const video = document.getElementById('video');
   try {
@@ -300,6 +340,86 @@ function barcodeFormatName(format) {
   return String(format);
 }
 
+
+let aktiveVideoSpur = null;
+
+async function zoomSetzen(wert) {
+  if (!aktiveVideoSpur || !aktiveVideoSpur.applyConstraints) return;
+  const z = Number(wert);
+  try {
+    await aktiveVideoSpur.applyConstraints({ advanced: [{ zoom: z }] });
+    diagnoseSetzen('zoomWert', z.toFixed(1) + '×');
+    const s = aktiveVideoSpur.getSettings ? aktiveVideoSpur.getSettings() : {};
+    if (s.zoom != null) diagnoseSetzen('zoomWert', Number(s.zoom).toFixed(1) + '×');
+  } catch (e) {
+    diagnoseSetzen('dFehler', 'Zoom: ' + diagnoseFehlername(e) + (e.message ? ': ' + e.message : ''));
+  }
+}
+
+async function fokusNeuAnfordern() {
+  if (!aktiveVideoSpur || !aktiveVideoSpur.applyConstraints) {
+    diagnoseSetzen('dFokus', 'nicht verfügbar');
+    return;
+  }
+  try {
+    const caps = aktiveVideoSpur.getCapabilities ? aktiveVideoSpur.getCapabilities() : {};
+    if (caps.focusMode && Array.from(caps.focusMode).indexOf('continuous') !== -1) {
+      await aktiveVideoSpur.applyConstraints({ advanced: [{ focusMode: 'continuous' }] });
+      diagnoseSetzen('dFokus', 'continuous angefordert');
+    } else {
+      diagnoseSetzen('dFokus', 'Browser bietet keinen Fokus-Regler');
+    }
+  } catch (e) {
+    diagnoseSetzen('dFokus', 'Fehler');
+    diagnoseSetzen('dFehler', 'Fokus: ' + diagnoseFehlername(e) + (e.message ? ': ' + e.message : ''));
+  }
+}
+
+function kameraWerkzeugeEinrichten(track) {
+  aktiveVideoSpur = track || null;
+  const slider = document.getElementById('zoomSlider');
+  const wert = document.getElementById('zoomWert');
+
+  if (!track) {
+    diagnoseSetzen('dZoom', 'keine Videospur');
+    diagnoseSetzen('dFokus', 'keine Videospur');
+    return;
+  }
+
+  let caps = {};
+  let settings = {};
+  try { caps = track.getCapabilities ? track.getCapabilities() : {}; } catch (e) {}
+  try { settings = track.getSettings ? track.getSettings() : {}; } catch (e) {}
+
+  if (caps.zoom && typeof caps.zoom.min === 'number' && typeof caps.zoom.max === 'number') {
+    slider.min = caps.zoom.min;
+    slider.max = caps.zoom.max;
+    slider.step = caps.zoom.step || 0.1;
+    slider.value = settings.zoom != null ? settings.zoom : caps.zoom.min;
+    slider.disabled = false;
+    wert.textContent = Number(slider.value).toFixed(1) + '×';
+    diagnoseSetzen('dZoom',
+      Number(caps.zoom.min).toFixed(1) + '× bis ' +
+      Number(caps.zoom.max).toFixed(1) + '×');
+    slider.oninput = function() {
+      wert.textContent = Number(this.value).toFixed(1) + '×';
+    };
+    slider.onchange = function() {
+      zoomSetzen(this.value);
+    };
+  } else {
+    slider.disabled = true;
+    wert.textContent = 'nicht verfügbar';
+    diagnoseSetzen('dZoom', 'Browser stellt Zoom nicht bereit');
+  }
+
+  if (caps.focusMode) {
+    diagnoseSetzen('dFokus', Array.from(caps.focusMode).join(', '));
+  } else {
+    diagnoseSetzen('dFokus', 'Browser stellt Fokus nicht bereit');
+  }
+}
+
 async function scannerStarten() {
   letzterCode = '';
   erkannt = false;
@@ -319,6 +439,8 @@ async function scannerStarten() {
   diagnoseSetzen('dErgebnis', '–');
   diagnoseSetzen('dFormat', '–');
   diagnoseSetzen('dDecoder', 'noch nicht gestartet');
+  diagnoseSetzen('dZoom', 'prüfe …');
+  diagnoseSetzen('dFokus', 'prüfe …');
 
   if (!window.ZXingBrowser || !ZXingBrowser.BrowserMultiFormatReader) {
     diagnoseSetzen('dZxing', 'NEIN');
@@ -459,6 +581,8 @@ async function scannerStarten() {
 
       diagnoseSetzen('dKameras', 'facingMode: environment');
 
+      kameraWerkzeugeEinrichten(track);
+
       if (track) {
         let info = track.label || 'Rückkamera';
         if (track.getSettings) {
@@ -469,16 +593,8 @@ async function scannerStarten() {
         diagnoseSetzen('dKamera', info);
       }
 
-      // Fokus nur anfragen, wenn der Browser ihn laut capabilities unterstützt.
-      if (track && track.getCapabilities && track.applyConstraints) {
-        const caps = track.getCapabilities();
-        if (caps && caps.focusMode &&
-            Array.from(caps.focusMode).indexOf('continuous') !== -1) {
-          await track.applyConstraints({
-            advanced: [{ focusMode: 'continuous' }]
-          });
-        }
-      }
+      // Fokus nur anfragen, wenn der Browser ihn tatsächlich anbietet.
+      await fokusNeuAnfordern();
     } catch (e) {
       diagnoseSetzen('dFehler',
         'Kamera-Zusatzoption: ' + diagnoseFehlername(e) +
@@ -486,7 +602,7 @@ async function scannerStarten() {
     }
 
     diagnoseVideoAktualisieren();
-    statusSetzen('Scanner V3 aktiv – EAN-Code vollständig in den Rahmen halten und kurz ruhig halten.');
+    statusSetzen('Scanner V4 aktiv – Barcode mittig halten und bei Bedarf Zoom verändern.');
   } catch (e) {
     diagnoseSetzen('dDecoder', 'FEHLER');
     diagnoseSetzen('dFehler',
