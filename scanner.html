@@ -258,16 +258,31 @@ function codeAnzeigen(code) {
 }
 
 function codeUebertragen(code) {
+  const daten = {
+    type: 'HAARGEFLUESTER_BARCODE',
+    code: String(code),
+    zeit: Date.now()
+  };
+
+  let direktGesendet = false;
+  let gespeichert = false;
+
+  // 1. Schnellster Weg: direkte Nachricht an die Salon-App.
   try {
     if (window.opener && !window.opener.closed) {
-      window.opener.postMessage({
-        type: 'HAARGEFLUESTER_BARCODE',
-        code: String(code)
-      }, '*');
-      return true;
+      window.opener.postMessage(daten, '*');
+      direktGesendet = true;
     }
   } catch (e) {}
-  return false;
+
+  // 2. Safari/iPhone-Fallback: Barcode zusätzlich im Browser speichern.
+  // Die Salon-App liest ihn beim Zurückwechseln über focus/visibilitychange aus.
+  try {
+    localStorage.setItem('HAARGEFLUESTER_BARCODE_RUECKGABE', JSON.stringify(daten));
+    gespeichert = true;
+  } catch (e) {}
+
+  return direktGesendet || gespeichert;
 }
 
 function scannerStoppen() {
@@ -538,10 +553,15 @@ async function scannerStarten() {
           codeAnzeigen(code);
 
           if (uebertragen) {
-            statusSetzen('Barcode erkannt und an die Salon-App übertragen.', 'erfolg');
+            statusSetzen('Barcode erkannt. Zur Salon-App zurückwechseln – der Code wird dort automatisch übernommen.', 'erfolg');
             setTimeout(function() {
-              try { window.close(); } catch (e) {}
-            }, 1400);
+              try {
+                if (window.opener && !window.opener.closed) {
+                  window.opener.focus();
+                  window.close();
+                }
+              } catch (e) {}
+            }, 900);
           } else {
             statusSetzen(
               'Barcode erkannt. Die Salon-App konnte nicht automatisch erreicht werden. Bitte zurück zur Salon-App wechseln.',
