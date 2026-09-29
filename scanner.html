@@ -125,6 +125,24 @@
     .neu { background: #a9785d; color: #fff; display: none; }
     .neu.aktiv { display: block; }
     .zurueck { background: #ded2c5; color: #222; }
+
+    .diagnose {
+      margin-top: 12px;
+      padding: 12px;
+      border-radius: 9px;
+      background: #fffaf4;
+      color: #443b35;
+      font-size: 12px;
+      line-height: 1.5;
+      word-break: break-word;
+    }
+    .diagnose strong { color: #6f4d3c; }
+    .diagnose-grid {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 4px 9px;
+    }
+
   </style>
 </head>
 
@@ -143,6 +161,26 @@
       </div>
 
       <div id="status">Kamera wird gestartet …</div>
+
+      <div id="diagnose" class="diagnose">
+        <strong>DIAGNOSE V1</strong>
+        <div class="diagnose-grid">
+          <span>ZXing:</span><span id="dZxing">prüfe …</span>
+          <span>Kameras:</span><span id="dKameras">–</span>
+          <span>Gewählt:</span><span id="dKamera">–</span>
+          <span>Video:</span><span id="dVideo">–</span>
+          <span>readyState:</span><span id="dReady">–</span>
+          <span>Decoder:</span><span id="dDecoder">–</span>
+          <span>Callbacks:</span><span id="dCallbacks">0</span>
+          <span>NotFound:</span><span id="dNotFound">0</span>
+          <span>Andere Fehler:</span><span id="dAndere">0</span>
+          <span>Letzter Fehler:</span><span id="dFehler">–</span>
+          <span>Ergebnis:</span><span id="dErgebnis">–</span>
+          <span>Format:</span><span id="dFormat">–</span>
+          <span>Browser:</span><span id="dBrowser">–</span>
+        </div>
+      </div>
+
       <div id="code" class="code"></div>
 
       <button id="neuBtn" class="neu" type="button" onclick="scannerNeuStarten()">
@@ -193,6 +231,10 @@ function codeUebertragen(code) {
 }
 
 function scannerStoppen() {
+  if (diagnoseTimer) {
+    clearInterval(diagnoseTimer);
+    diagnoseTimer = null;
+  }
   try {
     if (controls) controls.stop();
   } catch (e) {}
@@ -208,88 +250,184 @@ function scannerStoppen() {
   try { video.srcObject = null; } catch (e) {}
 }
 
+let diagnoseCallbacks = 0;
+let diagnoseNotFound = 0;
+let diagnoseAndere = 0;
+let diagnoseTimer = null;
+
+function diagnoseSetzen(id, wert) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = String(wert == null ? '–' : wert);
+}
+
+function diagnoseVideoAktualisieren() {
+  const video = document.getElementById('video');
+  if (!video) return;
+  diagnoseSetzen('dVideo',
+    (video.videoWidth || 0) + ' × ' + (video.videoHeight || 0));
+  diagnoseSetzen('dReady', video.readyState);
+}
+
+function diagnoseFehlername(error) {
+  if (!error) return '';
+  return String(
+    error.name ||
+    (error.constructor && error.constructor.name) ||
+    error.message ||
+    error
+  );
+}
+
 async function scannerStarten() {
   letzterCode = '';
   erkannt = false;
+  diagnoseCallbacks = 0;
+  diagnoseNotFound = 0;
+  diagnoseAndere = 0;
+
   document.getElementById('code').classList.remove('aktiv');
   document.getElementById('neuBtn').classList.remove('aktiv');
   statusSetzen('Kamera wird gestartet …');
 
+  diagnoseSetzen('dBrowser', navigator.userAgent || '–');
+  diagnoseSetzen('dCallbacks', 0);
+  diagnoseSetzen('dNotFound', 0);
+  diagnoseSetzen('dAndere', 0);
+  diagnoseSetzen('dFehler', '–');
+  diagnoseSetzen('dErgebnis', '–');
+  diagnoseSetzen('dFormat', '–');
+  diagnoseSetzen('dDecoder', 'noch nicht gestartet');
+
   if (!window.ZXingBrowser || !ZXingBrowser.BrowserMultiFormatReader) {
+    diagnoseSetzen('dZxing', 'NEIN');
+    diagnoseSetzen('dDecoder', 'NICHT VERFÜGBAR');
     statusSetzen('Scanner-Bibliothek konnte nicht geladen werden. Bitte Internetverbindung prüfen.', 'fehler');
     return;
   }
+
+  diagnoseSetzen('dZxing', 'JA');
 
   try {
     reader = new ZXingBrowser.BrowserMultiFormatReader();
 
     const devices = await ZXingBrowser.BrowserCodeReader.listVideoInputDevices();
+    diagnoseSetzen('dKameras', devices && devices.length ? devices.length : 0);
+
     if (!devices || !devices.length) {
       throw new Error('Keine Kamera gefunden.');
     }
 
-    // Wenn möglich die rückseitige Kamera wählen.
-    let deviceId = devices[0].deviceId;
+    let device = devices[0];
     const rear = devices.find(d => /back|rear|environment|rück|hinten/i.test(d.label || ''));
-    if (rear) deviceId = rear.deviceId;
+    if (rear) device = rear;
+
+    diagnoseSetzen('dKamera',
+      (device.label || 'ohne Kameranamen') + ' | ' + (device.deviceId || 'keine ID'));
+
+    diagnoseSetzen('dDecoder', 'startet …');
 
     controls = await reader.decodeFromVideoDevice(
-      deviceId,
+      device.deviceId,
       'video',
       function(result, error, ctrl) {
-        if (!result || erkannt) return;
+        diagnoseCallbacks++;
+        diagnoseSetzen('dCallbacks', diagnoseCallbacks);
 
-        let code = String(result.getText ? result.getText() : result.text || '').trim();
+        if (result && !erkannt) {
+          let code = String(result.getText ? result.getText() : result.text || '').trim();
+          let format = '–';
 
-        // EAN/UPC sind numerisch; Code128 darf ggf. auch Zeichen enthalten.
-        if (!code || code === letzterCode) return;
+          try {
+            if (result.getBarcodeFormat) format = result.getBarcodeFormat();
+            else if (result.format != null) format = result.format;
+          } catch (e) {}
 
-        letzterCode = code;
-        erkannt = true;
+          diagnoseSetzen('dErgebnis', code || '(leer)');
+          diagnoseSetzen('dFormat', format);
 
-        try { ctrl.stop(); } catch (e) {}
-        controls = null;
+          if (!code || code === letzterCode) return;
 
-        const uebertragen = codeUebertragen(code);
-        codeAnzeigen(code);
+          letzterCode = code;
+          erkannt = true;
 
-        if (uebertragen) {
-          statusSetzen('Barcode erkannt und an die Salon-App übertragen.', 'erfolg');
-          setTimeout(function() {
-            try { window.close(); } catch (e) {}
-          }, 700);
-        } else {
-          statusSetzen(
-            'Barcode erkannt. Die Salon-App konnte nicht automatisch erreicht werden. Bitte zurück zur Salon-App wechseln.',
-            'fehler'
-          );
+          try { ctrl.stop(); } catch (e) {}
+          controls = null;
+          diagnoseSetzen('dDecoder', 'Barcode erkannt / gestoppt');
+
+          const uebertragen = codeUebertragen(code);
+          codeAnzeigen(code);
+
+          if (uebertragen) {
+            statusSetzen('Barcode erkannt und an die Salon-App übertragen.', 'erfolg');
+            setTimeout(function() {
+              try { window.close(); } catch (e) {}
+            }, 1400);
+          } else {
+            statusSetzen(
+              'Barcode erkannt. Die Salon-App konnte nicht automatisch erreicht werden. Bitte zurück zur Salon-App wechseln.',
+              'fehler'
+            );
+          }
+          return;
+        }
+
+        if (error) {
+          const name = diagnoseFehlername(error);
+          if (/NotFound/i.test(name)) {
+            diagnoseNotFound++;
+            diagnoseSetzen('dNotFound', diagnoseNotFound);
+          } else {
+            diagnoseAndere++;
+            diagnoseSetzen('dAndere', diagnoseAndere);
+            diagnoseSetzen('dFehler',
+              name + (error.message && error.message !== name ? ': ' + error.message : ''));
+          }
         }
       }
     );
 
-    // Nach Start höhere Kamera-Auflösung / Autofokus anfragen, sofern unterstützt.
+    diagnoseSetzen('dDecoder', 'AKTIV');
+
+    const video = document.getElementById('video');
+
+    video.addEventListener('loadedmetadata', diagnoseVideoAktualisieren);
+    video.addEventListener('playing', diagnoseVideoAktualisieren);
+
+    if (diagnoseTimer) clearInterval(diagnoseTimer);
+    diagnoseTimer = setInterval(diagnoseVideoAktualisieren, 750);
+
     try {
-      const video = document.getElementById('video');
       const stream = video.srcObject;
       const track = stream && stream.getVideoTracks ? stream.getVideoTracks()[0] : null;
+
+      if (track && track.getSettings) {
+        const s = track.getSettings();
+        diagnoseSetzen('dKamera',
+          (track.label || device.label || 'Kamera') +
+          ' | ' + (s.width || '?') + '×' + (s.height || '?'));
+      }
+
       if (track && track.applyConstraints) {
         await track.applyConstraints({
           width: { ideal: 1920 },
           height: { ideal: 1080 },
-          advanced: [
-            { focusMode: 'continuous' }
-          ]
+          advanced: [{ focusMode: 'continuous' }]
         });
       }
     } catch (e) {
-      // Nicht jedes iPhone unterstützt diese Zusatz-Constraints.
+      diagnoseSetzen('dFehler',
+        'Zusatz-Constraints: ' + diagnoseFehlername(e) +
+        (e.message ? ': ' + e.message : ''));
     }
 
+    diagnoseVideoAktualisieren();
     statusSetzen('Scanner aktiv – Barcode waagerecht und vollständig in den Rahmen halten.');
   } catch (e) {
-    console.error(e);
+    diagnoseSetzen('dDecoder', 'FEHLER');
+    diagnoseSetzen('dFehler',
+      diagnoseFehlername(e) + (e && e.message ? ': ' + e.message : ''));
     statusSetzen(
-      'Kamera konnte gestartet werden, aber der Scanner ist nicht aktiv. Seite bitte neu laden und erneut versuchen.',
+      'Kamera/Scanner konnte nicht vollständig gestartet werden. Diagnose unten prüfen.',
       'fehler'
     );
   }
